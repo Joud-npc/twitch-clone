@@ -43,7 +43,7 @@ export default async function StreamPage({ params }: StreamPageProps) {
       <main className="flex-1 flex flex-col overflow-hidden">
         <StreamPlayer
           channelName={stream.agoraChannel}
-          isHost={true}
+          isHost={isHost}
           streamTitle={stream.title}
           streamerName={session.user.name ?? "Streamer"}
           streamId={stream.id}
