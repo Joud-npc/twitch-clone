@@ -34,47 +34,88 @@ export default function StreamPlayer({
   const [isLive, setIsLive] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [clientReady, setClientReady] = useState(false);
 
   useEffect(() => {
     const initAgora = async () => {
       const AgoraRTC = (await import("agora-rtc-sdk-ng")).default;
       AgoraRTC.setLogLevel(4);
-      clientRef.current = AgoraRTC.createClient({
+
+      const client = AgoraRTC.createClient({
         mode: "live",
         codec: "vp8",
       });
-    };
-    initAgora();
-  }, []);
 
-  useEffect(() => {
+      client.on("user-published", async (user, mediaType) => {
+        await client.subscribe(user, mediaType);
+        if (mediaType === "video" && remoteVideoRef.current) {
+          user.videoTrack?.play(remoteVideoRef.current);
+        }
+        if (mediaType === "audio") {
+          user.audioTrack?.play();
+        }
+      });
+
+      client.on("user-joined", async () => {
+        setViewerCount((v) => v + 1);
+        await incrementViewers(streamId);
+      });
+
+      client.on("user-left", async () => {
+        setViewerCount((v) => Math.max(0, v - 1));
+        await decrementViewers(streamId);
+      });
+
+      clientRef.current = client;
+      setClientReady(true);
+    };
+
+    initAgora();
+
+    return () => {
+      clientRef.current?.removeAllListeners();
+    };
+  }, [streamId]);
+
+  const joinAsViewer = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
 
-    client.on("user-joined", async () => {
-      setViewerCount((v) => v + 1);
-      await incrementViewers(streamId);
-    });
+    try {
+      setError(null);
+      const AgoraRTC = (await import("agora-rtc-sdk-ng")).default;
+      AgoraRTC.setLogLevel(4);
 
-    client.on("user-left", async () => {
-      setViewerCount((v) => Math.max(0, v - 1));
-      await decrementViewers(streamId);
-    });
+      await client.setClientRole("audience");
+      await client.join(APP_ID, channelName, null, null);
 
-    client.on("user-published", async (user, mediaType) => {
-      await client.subscribe(user, mediaType);
-      if (mediaType === "video" && remoteVideoRef.current) {
-        user.videoTrack?.play(remoteVideoRef.current);
+      // FIX CLÉ : le viewer arrive APRÈS que le stream a déjà commencé.
+      // Agora ne re-déclenche pas "user-published" pour les users déjà présents,
+      // donc on doit manuellement souscrire aux remote users déjà connectés.
+      const remoteUsers = client.remoteUsers;
+      for (const user of remoteUsers) {
+        if (user.hasVideo) {
+          await client.subscribe(user, "video");
+          if (remoteVideoRef.current) {
+            user.videoTrack?.play(remoteVideoRef.current);
+          }
+        }
+        if (user.hasAudio) {
+          await client.subscribe(user, "audio");
+          user.audioTrack?.play();
+        }
       }
-      if (mediaType === "audio") {
-        user.audioTrack?.play();
-      }
-    });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erreur inconnue";
+      setError(`Impossible de rejoindre : ${message}`);
+    }
+  }, [channelName]);
 
-    return () => {
-      client.removeAllListeners();
-    };
-  }, []);
+  useEffect(() => {
+    if (!isHost && clientReady) {
+      joinAsViewer();
+    }
+  }, [isHost, clientReady, joinAsViewer]);
 
   const startStream = useCallback(async () => {
     const client = clientRef.current;
@@ -128,27 +169,6 @@ export default function StreamPlayer({
     setLocalAudioTrack(null);
     setIsLive(false);
   }, [localVideoTrack, localAudioTrack, streamId]);
-
-  const joinAsViewer = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-
-    try {
-      const AgoraRTC = (await import("agora-rtc-sdk-ng")).default;
-      AgoraRTC.setLogLevel(4);
-      await client.setClientRole("audience");
-      await client.join(APP_ID, channelName, null, null);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Erreur inconnue";
-      setError(`Impossible de rejoindre : ${message}`);
-    }
-  }, [channelName]);
-
-  useEffect(() => {
-    if (!isHost) {
-      joinAsViewer();
-    }
-  }, [isHost, joinAsViewer]);
 
   return (
     <div className="flex flex-col w-full h-full bg-[#0E0E10]">
